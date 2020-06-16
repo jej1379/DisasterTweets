@@ -45,7 +45,7 @@ CACHE_DIR = 'cache/'
 # Sequences longer than this will be truncated, and sequences shorter than this will be padded.
 MAX_SEQ_LENGTH = 128
 TRAIN_BATCH_SIZE = 64
-EVAL_BATCH_SIZE = 32
+EVAL_BATCH_SIZE = 64
 LEARNING_RATE = 2e-5
 NUM_TRAIN_EPOCHS = 1
 evaluate_every = 5
@@ -151,7 +151,7 @@ if __name__ ==  '__main__':
                 # If we save using the predefined names, we can load using `from_pretrained`
                 model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
                 torch.save(model_to_save.state_dict(), os.path.join(OUTPUT_DIR, WEIGHTS_NAME %best))
-                model_to_save.config.to_json_file(os.path.join(OUTPUT_DIR, CONFIG_NAME))
+                model_to_save.config.to_json_string(os.path.join(OUTPUT_DIR, CONFIG_NAME))
                 tokenizer.save_vocabulary(OUTPUT_DIR)
                 best_model = model
 
@@ -167,7 +167,8 @@ if __name__ ==  '__main__':
             optimizer.zero_grad()
             global_step += 1
 
-    # Evaluate the best model
+
+    # Evaluate dev set using model w/ best acc
     dev_examples = processor.get_dev_examples(DATA_DIR)
     dev_examples_len = len(dev_examples)
 
@@ -178,29 +179,27 @@ if __name__ ==  '__main__':
         dev_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, dev_examples_for_processing),
                                    total=dev_examples_len))
 
-    all_input_ids = torch.tensor([f.input_ids for f in dev_features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in dev_features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in dev_features], dtype=torch.long)
-    all_label_ids = torch.tensor([f.label_id for f in dev_features], dtype=torch.long)
+    dev_data = TensorDataset(torch.tensor([f.input_ids for f in dev_features], dtype=torch.long),
+                             torch.tensor([f.input_mask for f in dev_features], dtype=torch.long),
+                             torch.tensor([f.segment_ids for f in dev_features], dtype=torch.long),
+                             torch.tensor([f.label_id for f in dev_features], dtype=torch.long))
+    dev_dataloader = DataLoader(dev_data, batch_size=EVAL_BATCH_SIZE)
 
-    dev_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-    dev_dataloader = DataLoader(dev_data, batch_size=TRAIN_BATCH_SIZE)
-
-    model.eval()
+    best_model.eval()
     dev_loss, dev_acc, dev_step = 0, .0, 0
     for batch in tqdm(dev_dataloader, desc="Iteration"):
         batch = tuple(t.to(device) for t in batch)
         input_ids, input_mask, segment_ids, label_ids = batch
 
-        logits, loss = model(input_ids, segment_ids, input_mask, labels=label_ids)
+        logits, loss = best_model(input_ids, segment_ids, input_mask, labels=label_ids)
 
         acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
-
         print("\rsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
 
         dev_acc += acc
         dev_loss += loss.item()
         dev_step += 1
+    print('Dev Set Result w/ ')
     print('Avg Acc = %.4f, Avg Loss = %.4f' %(float(dev_acc)/dev_step, float(dev_loss)/dev_step))
 
 
