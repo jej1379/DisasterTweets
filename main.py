@@ -8,8 +8,9 @@ from torch.nn import CrossEntropyLoss
 
 from tqdm import tqdm, trange
 import os, datetime
-from pytorch_pretrained_bert import BertTokenizer, BertModel, BertForMaskedLM, BertForSequenceClassification
-from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
+from pytorch_pretrained_bert import BertTokenizer
+import modeling
+from pytorch_pretrained_bert.optimization import BertAdam
 from torch.utils.tensorboard import SummaryWriter
 from multiprocessing import Pool, cpu_count
 import convert_examples_to_features
@@ -52,18 +53,18 @@ RANDOM_SEED = 42
 WARMUP_PROPORTION = 0.1
 OUTPUT_MODE = 'classification'
 CONFIG_NAME = 'config.json'
-WEIGHTS_NAME = 'pytorch_model.bin'
+WEIGHTS_NAME = 'pytorch_model_%.4f.bin'
 
 output_mode = OUTPUT_MODE
 cache_dir = CACHE_DIR
 
-if os.path.exists(REPORTS_DIR) and os.listdir(REPORTS_DIR):
-    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
-    os.makedirs(REPORTS_DIR)
-if not os.path.exists(REPORTS_DIR):
-    os.makedirs(REPORTS_DIR)
-    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
-    os.makedirs(REPORTS_DIR)
+#if os.path.exists(REPORTS_DIR) and os.listdir(REPORTS_DIR):
+#    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
+#    os.makedirs(REPORTS_DIR)
+#if not os.path.exists(REPORTS_DIR):
+#    os.makedirs(REPORTS_DIR)
+#    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
+#    os.makedirs(REPORTS_DIR)
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
@@ -95,7 +96,9 @@ if __name__ ==  '__main__':
         pickle.dump(train_features, f)
 
     # Load pre-trained model (weights)
-    model = BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
+    #PreTrainedBertModel = modeling.PreTrainedBertModel.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
+    model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
+    #BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
     model.to(device)
 
     param_optimizer = list(model.named_parameters())
@@ -134,16 +137,24 @@ if __name__ ==  '__main__':
     model.train()
     for _ in trange(int(NUM_TRAIN_EPOCHS), desc="Epoch"):
         tr_loss = 0
-        nb_tr_examples, nb_tr_steps = 0, 0
+        nb_tr_examples, nb_tr_steps, best = 0, 0, .0
         for batch in tqdm(train_dataloader, desc="Iteration"):
             batch = tuple(t.to(device) for t in batch)
             input_ids, input_mask, segment_ids, label_ids = batch
 
-            logits = model(input_ids, segment_ids, input_mask, labels=None)
-            loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
+            logits, loss = model(input_ids, segment_ids, input_mask, labels=label_ids)
             loss.backward()
 
             acc = 100*(torch.max(logits.view(-1, num_labels), 1).indices==label_ids).sum().item()/float(TRAIN_BATCH_SIZE)
+            best = acc if acc > best else best
+            if acc > 80 and acc==best:
+                # If we save using the predefined names, we can load using `from_pretrained`
+                model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+                torch.save(model_to_save.state_dict(), os.path.join(OUTPUT_DIR, WEIGHTS_NAME %best))
+                model_to_save.config.to_json_file(os.path.join(OUTPUT_DIR, CONFIG_NAME))
+                tokenizer.save_vocabulary(OUTPUT_DIR)
+                best_model = model
+
             print("\rsteps = %d, Loss = %.4f, Acc = %.2f" % (global_step, loss, acc))
             writer.add_scalar('Train/Loss', loss, global_step)
             writer.add_scalar('Train/Acc', acc, global_step)
@@ -156,12 +167,40 @@ if __name__ ==  '__main__':
             optimizer.zero_grad()
             global_step += 1
 
-    model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+    # Evaluate the best model
+    dev_examples = processor.get_dev_examples(DATA_DIR)
+    dev_examples_len = len(dev_examples)
 
-    # If we save using the predefined names, we can load using `from_pretrained`
-    output_model_file = os.path.join(OUTPUT_DIR, WEIGHTS_NAME)
-    output_config_file = os.path.join(OUTPUT_DIR, CONFIG_NAME)
+    label_map = {label: i for i, label in enumerate(label_list)}
+    dev_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in
+                                     dev_examples]
+    with Pool(process_count) as p:
+        dev_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, dev_examples_for_processing),
+                                   total=dev_examples_len))
 
-    torch.save(model_to_save.state_dict(), output_model_file)
-    model_to_save.config.to_json_file(output_config_file)
-    tokenizer.save_vocabulary(OUTPUT_DIR)
+    all_input_ids = torch.tensor([f.input_ids for f in dev_features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in dev_features], dtype=torch.long)
+    all_segment_ids = torch.tensor([f.segment_ids for f in dev_features], dtype=torch.long)
+    all_label_ids = torch.tensor([f.label_id for f in dev_features], dtype=torch.long)
+
+    dev_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+    dev_dataloader = DataLoader(dev_data, batch_size=TRAIN_BATCH_SIZE)
+
+    model.eval()
+    dev_loss, dev_acc, dev_step = 0, .0, 0
+    for batch in tqdm(dev_dataloader, desc="Iteration"):
+        batch = tuple(t.to(device) for t in batch)
+        input_ids, input_mask, segment_ids, label_ids = batch
+
+        logits, loss = model(input_ids, segment_ids, input_mask, labels=label_ids)
+
+        acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
+
+        print("\rsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
+
+        dev_acc += acc
+        dev_loss += loss.item()
+        dev_step += 1
+    print('Avg Acc = %.4f, Avg Loss = %.4f' %(float(dev_acc)/dev_step, float(dev_loss)/dev_step))
+
+
