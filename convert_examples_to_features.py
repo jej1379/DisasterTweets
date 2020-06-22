@@ -1,3 +1,7 @@
+import requests
+from lxml.html import fromstring
+import re
+
 class InputFeatures(object):
     """A single set of features of data."""
 
@@ -24,31 +28,41 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
         else:
             tokens_b.pop()
 
+def find_urls(text):
+    regex = r"(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:'\".,<>?«»“”‘’]))"
+    urls = re.findall(regex, text)
+    try:
+        url=urls[0][0]
+        if url is not None: return url
+        else: return ''
+    except: return ''
+
+def get_title_from_url(url):
+    try:
+        r=requests.get(url, allow_redirects=True)
+        if r.status_code == 200:
+            title = fromstring(r.content).findtext('.//title')
+            if title is not None: return title
+            else: return ''
+        else: return ''
+    except: return ''
 
 def convert_example_to_feature(example_row):
     # return example_row
     example, label_map, max_seq_length, tokenizer, output_mode = example_row
-
-    tokens_a = tokenizer.tokenize(example.text_a)
-
-    tokens_b = None
-    if example.text_b:
-        tokens_b = tokenizer.tokenize(example.text_b)
-        # Modifies `tokens_a` and `tokens_b` in place so that the total
-        # length is less than the specified length.
-        # Account for [CLS], [SEP], [SEP] with "- 3"
-        _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+    url = find_urls(example.text_a)
+    if url != '':
+        title = get_title_from_url(url)
+        text = example.text_a.replace(url, title)
     else:
-        # Account for [CLS] and [SEP] with "- 2"
-        if len(tokens_a) > max_seq_length - 2:
-            tokens_a = tokens_a[:(max_seq_length - 2)]
+        text = example.text_a.replace(url, '')
+
+    tokens_a = tokenizer.tokenize(text)
+    # Account for [CLS] and [SEP] with "- 2"
+    if len(tokens_a) > max_seq_length - 2: tokens_a = tokens_a[:(max_seq_length - 2)]
 
     tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
     segment_ids = [0] * len(tokens)
-
-    if tokens_b:
-        tokens += tokens_b + ["[SEP]"]
-        segment_ids += [1] * (len(tokens_b) + 1)
 
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
 

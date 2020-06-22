@@ -1,6 +1,5 @@
 # git add file1 file2; git commit -m "message" file1 file2; git push -u origin master
 from __future__ import absolute_import, division, print_function
-
 import csv
 import os
 import sys

@@ -28,7 +28,7 @@ DATA_DIR = "data/"
 # Bert pre-trained model selected in the list: bert-base-uncased,
 # bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased,
 # bert-base-multilingual-cased, bert-base-chinese.
-BERT_MODEL = 'bert-base-cased'
+BERT_MODEL = 'bert-base-uncased'
 # The name of the task to train.I'm going to name this 'yelp'.
 TASK_NAME = 'DisasterTweets'
 
@@ -46,9 +46,8 @@ CACHE_DIR = 'cache/'
 MAX_SEQ_LENGTH = 128
 TRAIN_BATCH_SIZE = 64
 EVAL_BATCH_SIZE = 64
-LEARNING_RATE = 2e-5
+LEARNING_RATE = 1e-4
 NUM_TRAIN_EPOCHS = 1
-evaluate_every = 5
 RANDOM_SEED = 42
 WARMUP_PROPORTION = 0.1
 OUTPUT_MODE = 'classification'
@@ -80,7 +79,7 @@ num_train_optimization_steps = int(train_examples_len / TRAIN_BATCH_SIZE) * NUM_
 
 
 # Load pre-trained model tokenizer (vocabulary)
-tokenizer = BertTokenizer.from_pretrained('bert-base-cased', do_lower_case=False)
+tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
 
 label_map = {label: i for i, label in enumerate(label_list)}
 train_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in train_examples]
@@ -90,7 +89,8 @@ if __name__ ==  '__main__':
     print(f'Preparing to convert {train_examples_len} examples..')
     print(f'Spawning {process_count} processes..')
     with Pool(process_count) as p:
-        train_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, train_examples_for_processing), total=train_examples_len))
+        train_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature,
+                                          train_examples_for_processing), total=train_examples_len))
 
     with open(DATA_DIR + "train_features.pkl", "wb") as f:
         pickle.dump(train_features, f)
