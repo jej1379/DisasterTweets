@@ -89,12 +89,15 @@ process_count = cpu_count() - 1
 if __name__ ==  '__main__':
     print(f'Preparing to convert {train_examples_len} examples..')
     print(f'Spawning {process_count} processes..')
-    with Pool(process_count) as p:
-        train_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature,
-                                          train_examples_for_processing), total=train_examples_len))
+    if os.path.exists(DATA_DIR + "train_features.pkl"):
+        train_features = pickle.load(open(DATA_DIR + "train_features.pkl", "rb"))
+    else:
+        with Pool(process_count) as p:
+            train_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature,
+                                              train_examples_for_processing), total=train_examples_len))
 
-    with open(DATA_DIR + "train_features.pkl", "wb") as f:
-        pickle.dump(train_features, f)
+        with open(DATA_DIR + "train_features.pkl", "wb") as f:
+            pickle.dump(train_features, f)
 
     # Load pre-trained model (weights)
     #PreTrainedBertModel = modeling.PreTrainedBertModel.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
@@ -148,15 +151,16 @@ if __name__ ==  '__main__':
 
             acc = 100*(torch.max(logits.view(-1, num_labels), 1).indices==label_ids).sum().item()/float(TRAIN_BATCH_SIZE)
             best = acc if acc > best else best
-            if acc > 80 and acc==best:
+            if acc > 85 and acc==best:
                 # If we save using the predefined names, we can load using `from_pretrained`
                 model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
                 torch.save(model_to_save.state_dict(), os.path.join(OUTPUT_DIR, WEIGHTS_NAME %best))
-                model_to_save.config.to_json_string(os.path.join(OUTPUT_DIR, CONFIG_NAME))
+                model_to_save.config.to_json_string()
                 tokenizer.save_vocabulary(OUTPUT_DIR)
+                print(WEIGHTS_NAME %best, "SAVED!")
                 best_model = model
 
-            print("\rsteps = %d, Loss = %.4f, Acc = %.2f" % (global_step, loss, acc))
+            print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (global_step, loss, acc))
             writer.add_scalar('Train/Loss', loss, global_step)
             writer.add_scalar('Train/Acc', acc, global_step)
             writer.flush()
@@ -174,11 +178,18 @@ if __name__ ==  '__main__':
     dev_examples_len = len(dev_examples)
 
     label_map = {label: i for i, label in enumerate(label_list)}
-    dev_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in
-                                     dev_examples]
-    with Pool(process_count) as p:
-        dev_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, dev_examples_for_processing),
-                                   total=dev_examples_len))
+    dev_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in dev_examples]
+
+    if os.path.exists(DATA_DIR + "dev_features.pkl"):
+        dev_features = pickle.load(open(DATA_DIR + "dev_features.pkl", "rb"))
+    else:
+        with Pool(process_count) as p:
+            dev_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, dev_examples_for_processing),
+                     total=dev_examples_len))
+
+        with open(DATA_DIR + "dev_features.pkl", "wb") as f:
+            pickle.dump(dev_features, f)
+
 
     dev_data = TensorDataset(torch.tensor([f.input_ids for f in dev_features], dtype=torch.long),
                              torch.tensor([f.input_mask for f in dev_features], dtype=torch.long),
@@ -195,7 +206,7 @@ if __name__ ==  '__main__':
         logits, loss = best_model(input_ids, segment_ids, input_mask, labels=label_ids)
 
         acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
-        print("\rsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
+        print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
 
         dev_acc += acc
         dev_loss += loss.item()
