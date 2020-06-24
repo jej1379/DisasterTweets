@@ -39,7 +39,7 @@ def find_urls(text):
 
 def get_title_from_url(url):
     try:
-        r=requests.get(url, allow_redirects=True)
+        r=requests.get(url, allow_redirects=True, timeout=1)
         if r.status_code == 200:
             title = fromstring(r.content).findtext('.//title')
             if title is not None: return title
@@ -57,7 +57,7 @@ def convert_example_to_feature(example_row):
     else:
         text = example.text_a.replace(url, '')
 
-    tokens_a = tokenizer.tokenize(text)
+    tokens_a=[tok for tok in tokenizer.tokenize(re.sub('\s+#',' ',text.strip()))]
     # Account for [CLS] and [SEP] with "- 2"
     if len(tokens_a) > max_seq_length - 2: tokens_a = tokens_a[:(max_seq_length - 2)]
 
