@@ -97,7 +97,7 @@ if __name__ ==  '__main__':
     model.to(device)
 
     train_acc = ckpt.split('.bin')[0].split('_')[-1]
-    save_file=open('./data/result_%s.csv' %train_acc)
+    save_file=open('./data/result_%s.csv' %train_acc, 'w', encoding='utf-8')
 
     print(ckpt)
     step, saved = 0, 0
