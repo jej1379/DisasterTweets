@@ -1,7 +1,7 @@
 # -*- coding:utf-8 -*-
 
 import torch
-import pickle
+import pickle, glob
 import utils
 from torch.utils.data import (DataLoader, RandomSampler, TensorDataset)
 from torch.nn import CrossEntropyLoss
@@ -47,8 +47,8 @@ CACHE_DIR = 'cache/'
 MAX_SEQ_LENGTH = 50
 TRAIN_BATCH_SIZE = 128
 EVAL_BATCH_SIZE = 256
-LEARNING_RATE = 5e-4
-NUM_TRAIN_EPOCHS = 2
+LEARNING_RATE = 3e-4
+NUM_TRAIN_EPOCHS = 1
 RANDOM_SEED = 42
 WARMUP_PROPORTION = 0.1
 OUTPUT_MODE = 'classification'
@@ -57,14 +57,6 @@ WEIGHTS_NAME = 'pytorch_model_%.2f.bin'
 
 output_mode = OUTPUT_MODE
 cache_dir = CACHE_DIR
-
-#if os.path.exists(REPORTS_DIR) and os.listdir(REPORTS_DIR):
-#    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
-#    os.makedirs(REPORTS_DIR)
-#if not os.path.exists(REPORTS_DIR):
-#    os.makedirs(REPORTS_DIR)
-#    REPORTS_DIR += f'/report_{len(os.listdir(REPORTS_DIR))}'
-#    os.makedirs(REPORTS_DIR)
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
@@ -83,17 +75,14 @@ tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
 process_count = cpu_count() - 1
 
 def get_dataloader(typ='train', BATCH_SIZE=TRAIN_BATCH_SIZE, shuffle=False):
-    if typ=='train':
-        examples = processor.get_train_examples(DATA_DIR)
-    elif typ=='dev': examples = processor.get_dev_examples(DATA_DIR)
-    else: examples = processor.get_test_examples(DATA_DIR)
-    examples_len = len(examples)
-
     label_map = {label: i for i, label in enumerate(label_list)}
 
     if os.path.exists(DATA_DIR + "%s_features.pkl" %typ):
         features = pickle.load(open(DATA_DIR + "%s_features.pkl" %typ, "rb"))
     else:
+        if typ == 'train': examples = processor.get_train_examples(DATA_DIR)
+        elif typ == 'dev': examples = processor.get_dev_examples(DATA_DIR)
+        examples_len = len(examples)
         examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in examples]
         with Pool(process_count) as p:
             features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, examples_for_processing),
@@ -118,8 +107,8 @@ def eval(best_model, dev_dataloader):
 
         logits, loss = best_model(input_ids, segment_ids, input_mask, labels=label_ids)
 
-        acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
-        print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
+        acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(EVAL_BATCH_SIZE)
+        print("\neval steps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
 
         dev_acc += acc
         dev_loss += loss.item()
@@ -134,7 +123,6 @@ if __name__ ==  '__main__':
     # Load pre-trained model (weights)
     #PreTrainedBertModel = modeling.PreTrainedBertModel.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
     model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
-    #BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
     model.to(device)
 
     param_optimizer = list(model.named_parameters())
@@ -157,13 +145,13 @@ if __name__ ==  '__main__':
     logger.info("  Batch size = %d", TRAIN_BATCH_SIZE)
     logger.info("  Num steps = %d", num_train_optimization_steps)
 
+    loss_fct = CrossEntropyLoss()
+    #train_dataloader = get_dataloader('train', TRAIN_BATCH_SIZE, shuffle=True)
+    dev_dataloader = get_dataloader('dev', EVAL_BATCH_SIZE)
+    '''
     # tensorboard --logdir=runs
     writer = SummaryWriter('./reports/train_{0}-{1}'.format(TASK_NAME, datetime.datetime.now().strftime("%Y%m%d_%H%M")))
-    loss_fct = CrossEntropyLoss()
-
-    train_dataloader = get_dataloader('train', TRAIN_BATCH_SIZE, shuffle=True)
-    dev_dataloader = get_dataloader('dev', EVAL_BATCH_SIZE)
-
+    
     model.train()
     for _ in trange(int(NUM_TRAIN_EPOCHS), desc="Epoch"):
         tr_loss = 0
@@ -185,8 +173,6 @@ if __name__ ==  '__main__':
                 tokenizer.save_vocabulary(OUTPUT_DIR)
                 print(WEIGHTS_NAME %best, "SAVED!")
                 best_model = model
-                try: eval(best_model, dev_dataloader)
-                except: pass
 
             print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (global_step, loss, acc))
             writer.add_scalar('Train/Loss', loss, global_step)
@@ -199,11 +185,21 @@ if __name__ ==  '__main__':
             optimizer.step()
             optimizer.zero_grad()
             global_step += 1
+    '''
+    for ckpt in glob.glob('./outputs/pytorch_model_*'):
+        model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR,
+                                                                       num_labels=num_labels)
+        model.eval()
+        model.load_state_dict(torch.load(ckpt))
+        model.to(device)
 
-    eval(best_model, dev_dataloader)
+        train_acc = ckpt.split('.bin')[0].split('_')[-1]
 
-    #best_model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
-    #best_model.load_state_dict(torch.load(PATH))
+        print(ckpt)
+        step, saved = 0, 0
+        eval(model, dev_dataloader)
+
+
 
 
 

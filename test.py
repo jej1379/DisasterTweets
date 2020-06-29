@@ -1,7 +1,7 @@
 # -*- coding:utf-8 -*-
 
 import torch
-import pickle
+import pickle, glob
 import utils
 from torch.utils.data import (DataLoader, RandomSampler, TensorDataset)
 from torch.nn import CrossEntropyLoss
@@ -43,8 +43,8 @@ CACHE_DIR = 'cache/'
 MAX_SEQ_LENGTH = 50
 TRAIN_BATCH_SIZE = 128
 EVAL_BATCH_SIZE = 256
-LEARNING_RATE = 5e-4
-NUM_TRAIN_EPOCHS = 2
+LEARNING_RATE = 3e-4
+NUM_TRAIN_EPOCHS = 1
 RANDOM_SEED = 42
 WARMUP_PROPORTION = 0.1
 OUTPUT_MODE = 'classification'
@@ -63,14 +63,13 @@ tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
 process_count = cpu_count() - 1
 
 def get_dataloader(typ='test', BATCH_SIZE=TRAIN_BATCH_SIZE, shuffle=False):
-    examples = processor.get_test_examples(DATA_DIR)
-    examples_len = len(examples)
-
     label_map = {label: i for i, label in enumerate(label_list)}
     if os.path.exists(DATA_DIR + "%s_features.pkl" %typ):
         features = pickle.load(open(DATA_DIR + "%s_features.pkl" %typ, "rb"))
     else:
+        examples = processor.get_test_examples(DATA_DIR)
         examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in examples]
+        examples_len = len(examples)
         with Pool(process_count) as p:
             features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, examples_for_processing),total=examples_len))
 
@@ -86,21 +85,22 @@ def get_dataloader(typ='test', BATCH_SIZE=TRAIN_BATCH_SIZE, shuffle=False):
     dataloader = DataLoader(data, batch_size=BATCH_SIZE, shuffle=shuffle)
     return dataloader
 
-model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
-model.load_state_dict(torch.load('./outputs/pytorch_model_90.6250.bin'))
-model.to(device)
-
 if __name__ ==  '__main__':
     print(f'Preparing to convert test examples..')
     print(f'Spawning {process_count} processes..')
     test_dataloader = get_dataloader('test', EVAL_BATCH_SIZE)
 
-    # best_model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
-    # best_model.load_state_dict(torch.load(PATH))
-
+for ckpt in glob.glob('./outputs/pytorch_model_*'):
+    model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR,num_labels=num_labels)
     model.eval()
+    model.load_state_dict(torch.load(ckpt))
+    model.to(device)
+
+    train_acc = ckpt.split('.bin')[0].split('_')[-1]
+    save_file=open('./data/result_%s.csv' %train_acc)
+
+    print(ckpt)
     step, saved = 0, 0
-    save_file=open('result.csv')
     for batch in tqdm(test_dataloader, desc="Iteration"):
         batch = tuple(t.to(device) for t in batch)
         ids, input_ids, input_mask, segment_ids, label_ids = batch
