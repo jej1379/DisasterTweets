@@ -90,7 +90,7 @@ if __name__ ==  '__main__':
     print(f'Spawning {process_count} processes..')
     test_dataloader = get_dataloader('test', EVAL_BATCH_SIZE)
 
-for ckpt in glob.glob('./outputs/pytorch_model_*'):
+    ckpt = './outputs/pytorch_model_100.00.bin'
     model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR,num_labels=num_labels)
     model.eval()
     model.load_state_dict(torch.load(ckpt))
