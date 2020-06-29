@@ -45,15 +45,15 @@ CACHE_DIR = 'cache/'
 # Sequences longer than this will be truncated, and sequences shorter than this will be padded.
 # avg(seq_len) ~ 31, max(seq_len) = 82 (w/ BertTokenizer)
 MAX_SEQ_LENGTH = 50
-TRAIN_BATCH_SIZE = 64
-EVAL_BATCH_SIZE = 64
-LEARNING_RATE = 1e-4
-NUM_TRAIN_EPOCHS = 1
+TRAIN_BATCH_SIZE = 128
+EVAL_BATCH_SIZE = 256
+LEARNING_RATE = 5e-4
+NUM_TRAIN_EPOCHS = 2
 RANDOM_SEED = 42
 WARMUP_PROPORTION = 0.1
 OUTPUT_MODE = 'classification'
 CONFIG_NAME = 'config.json'
-WEIGHTS_NAME = 'pytorch_model_%.4f.bin'
+WEIGHTS_NAME = 'pytorch_model_%.2f.bin'
 
 output_mode = OUTPUT_MODE
 cache_dir = CACHE_DIR
@@ -70,34 +70,66 @@ if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
 processor = utils.BinaryClassificationProcessor()
-train_examples = processor.get_train_examples(DATA_DIR)
-train_examples_len = len(train_examples)
-
 label_list = processor.get_labels() # [0, 1] for binary classification
 num_labels = len(label_list)
 
+train_examples_len = len(processor.get_train_examples(DATA_DIR))
 num_train_optimization_steps = int(train_examples_len / TRAIN_BATCH_SIZE) * NUM_TRAIN_EPOCHS
 
 
 # Load pre-trained model tokenizer (vocabulary)
 tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
 
-label_map = {label: i for i, label in enumerate(label_list)}
-train_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in train_examples]
-
 process_count = cpu_count() - 1
+
+def get_dataloader(typ='train', BATCH_SIZE=TRAIN_BATCH_SIZE, shuffle=False):
+    if typ=='train':
+        examples = processor.get_train_examples(DATA_DIR)
+    elif typ=='dev': examples = processor.get_dev_examples(DATA_DIR)
+    else: examples = processor.get_test_examples(DATA_DIR)
+    examples_len = len(examples)
+
+    label_map = {label: i for i, label in enumerate(label_list)}
+
+    if os.path.exists(DATA_DIR + "%s_features.pkl" %typ):
+        features = pickle.load(open(DATA_DIR + "%s_features.pkl" %typ, "rb"))
+    else:
+        examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in examples]
+        with Pool(process_count) as p:
+            features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, examples_for_processing),
+                                     total=examples_len))
+
+        with open(DATA_DIR + "%s_features.pkl" %typ, "wb") as f:
+            pickle.dump(features, f)
+
+    data = TensorDataset(torch.tensor([f.input_ids for f in features], dtype=torch.long),
+                             torch.tensor([f.input_mask for f in features], dtype=torch.long),
+                             torch.tensor([f.segment_ids for f in features], dtype=torch.long),
+                             torch.tensor([f.label_id for f in features], dtype=torch.long))
+    dataloader = DataLoader(data, batch_size=BATCH_SIZE, shuffle=shuffle)
+    return dataloader
+
+def eval(best_model, dev_dataloader):
+    best_model.eval()
+    dev_loss, dev_acc, dev_step = 0, .0, 0
+    for batch in tqdm(dev_dataloader, desc="Iteration"):
+        batch = tuple(t.to(device) for t in batch)
+        input_ids, input_mask, segment_ids, label_ids = batch
+
+        logits, loss = best_model(input_ids, segment_ids, input_mask, labels=label_ids)
+
+        acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
+        print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
+
+        dev_acc += acc
+        dev_loss += loss.item()
+        dev_step += 1
+    print('Dev Set Result w/ ')
+    print('Avg Acc = %.4f, Avg Loss = %.4f' %(float(dev_acc)/dev_step, float(dev_loss)/dev_step))
+
 if __name__ ==  '__main__':
     print(f'Preparing to convert {train_examples_len} examples..')
     print(f'Spawning {process_count} processes..')
-    if os.path.exists(DATA_DIR + "train_features.pkl"):
-        train_features = pickle.load(open(DATA_DIR + "train_features.pkl", "rb"))
-    else:
-        with Pool(process_count) as p:
-            train_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature,
-                                              train_examples_for_processing), total=train_examples_len))
-
-        with open(DATA_DIR + "train_features.pkl", "wb") as f:
-            pickle.dump(train_features, f)
 
     # Load pre-trained model (weights)
     #PreTrainedBertModel = modeling.PreTrainedBertModel.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
@@ -125,18 +157,12 @@ if __name__ ==  '__main__':
     logger.info("  Batch size = %d", TRAIN_BATCH_SIZE)
     logger.info("  Num steps = %d", num_train_optimization_steps)
 
-    all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-    all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
-
     # tensorboard --logdir=runs
     writer = SummaryWriter('./reports/train_{0}-{1}'.format(TASK_NAME, datetime.datetime.now().strftime("%Y%m%d_%H%M")))
     loss_fct = CrossEntropyLoss()
 
-    train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-    train_sampler = RandomSampler(train_data)
-    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=TRAIN_BATCH_SIZE)
+    train_dataloader = get_dataloader('train', TRAIN_BATCH_SIZE, shuffle=True)
+    dev_dataloader = get_dataloader('dev', EVAL_BATCH_SIZE)
 
     model.train()
     for _ in trange(int(NUM_TRAIN_EPOCHS), desc="Epoch"):
@@ -159,6 +185,8 @@ if __name__ ==  '__main__':
                 tokenizer.save_vocabulary(OUTPUT_DIR)
                 print(WEIGHTS_NAME %best, "SAVED!")
                 best_model = model
+                try: eval(best_model, dev_dataloader)
+                except: pass
 
             print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (global_step, loss, acc))
             writer.add_scalar('Train/Loss', loss, global_step)
@@ -172,46 +200,11 @@ if __name__ ==  '__main__':
             optimizer.zero_grad()
             global_step += 1
 
+    eval(best_model, dev_dataloader)
 
-    # Evaluate dev set using model w/ best acc
-    dev_examples = processor.get_dev_examples(DATA_DIR)
-    dev_examples_len = len(dev_examples)
-
-    label_map = {label: i for i, label in enumerate(label_list)}
-    dev_examples_for_processing = [(example, label_map, MAX_SEQ_LENGTH, tokenizer, OUTPUT_MODE) for example in dev_examples]
-
-    if os.path.exists(DATA_DIR + "dev_features.pkl"):
-        dev_features = pickle.load(open(DATA_DIR + "dev_features.pkl", "rb"))
-    else:
-        with Pool(process_count) as p:
-            dev_features = list(tqdm(p.imap(convert_examples_to_features.convert_example_to_feature, dev_examples_for_processing),
-                     total=dev_examples_len))
-
-        with open(DATA_DIR + "dev_features.pkl", "wb") as f:
-            pickle.dump(dev_features, f)
+    #best_model = modeling.BertForSequenceClassification.from_pretrained(BERT_MODEL, cache_dir=CACHE_DIR, num_labels=num_labels)
+    #best_model.load_state_dict(torch.load(PATH))
 
 
-    dev_data = TensorDataset(torch.tensor([f.input_ids for f in dev_features], dtype=torch.long),
-                             torch.tensor([f.input_mask for f in dev_features], dtype=torch.long),
-                             torch.tensor([f.segment_ids for f in dev_features], dtype=torch.long),
-                             torch.tensor([f.label_id for f in dev_features], dtype=torch.long))
-    dev_dataloader = DataLoader(dev_data, batch_size=EVAL_BATCH_SIZE)
-
-    best_model.eval()
-    dev_loss, dev_acc, dev_step = 0, .0, 0
-    for batch in tqdm(dev_dataloader, desc="Iteration"):
-        batch = tuple(t.to(device) for t in batch)
-        input_ids, input_mask, segment_ids, label_ids = batch
-
-        logits, loss = best_model(input_ids, segment_ids, input_mask, labels=label_ids)
-
-        acc = 100 * (torch.max(logits.view(-1, num_labels), 1).indices == label_ids).sum().item() / float(TRAIN_BATCH_SIZE)
-        print("\nsteps = %d, Loss = %.4f, Acc = %.2f" % (dev_step, loss, acc))
-
-        dev_acc += acc
-        dev_loss += loss.item()
-        dev_step += 1
-    print('Dev Set Result w/ ')
-    print('Avg Acc = %.4f, Avg Loss = %.4f' %(float(dev_acc)/dev_step, float(dev_loss)/dev_step))
 
 

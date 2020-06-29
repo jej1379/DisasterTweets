@@ -5,7 +5,8 @@ import re
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_id):
+    def __init__(self, ids, input_ids, input_mask, segment_ids, label_id):
+        self.ids = ids
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
@@ -47,7 +48,7 @@ def get_title_from_url(url):
         else: return ''
     except: return ''
 
-def convert_example_to_feature(example_row):
+def convert_example_to_feature(example_row, typ='train'):
     # return example_row
     example, label_map, max_seq_length, tokenizer, output_mode = example_row
     url = find_urls(example.text_a)
@@ -81,13 +82,13 @@ def convert_example_to_feature(example_row):
     assert len(segment_ids) == max_seq_length
 
     if output_mode == "classification":
-        label_id = label_map[example.label]
-    elif output_mode == "regression":
-        label_id = float(example.label)
+        label_id = label_map.get(example.label, 0)
     else:
         raise KeyError(output_mode)
 
-    return InputFeatures(input_ids=input_ids,
-                         input_mask=input_mask,
-                         segment_ids=segment_ids,
-                         label_id=label_id)
+    return InputFeatures(
+        ids=example.guid,
+        input_ids=input_ids,
+        input_mask=input_mask,
+        segment_ids=segment_ids,
+        label_id=label_id)

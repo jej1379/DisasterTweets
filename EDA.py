@@ -11,20 +11,33 @@ plt.style.use('ggplot')
 stop=set(stopwords.words('english'))
 import re
 from nltk.tokenize import word_tokenize
-#import gensim
-import string
-from keras.preprocessing.text import Tokenizer
-from keras.preprocessing.sequence import pad_sequences
-from tqdm import tqdm
-from keras.models import Sequential
-from keras.layers import Embedding,LSTM,Dense,SpatialDropout1D
-from keras.initializers import Constant
-from sklearn.model_selection import train_test_split
-from keras.optimizers import Adam
+from pytorch_pretrained_bert import BertTokenizer
 
+BERT_MODEL = 'bert-base-uncased'
 
 tweet= pd.read_csv('./data/train.csv')
 test=pd.read_csv('./data/test.csv')
+
+"""
+output=open('./data/train.tsv','w',encoding='utf-8')
+for i, row in tweet.iterrows():
+    output.write('%d\t%d\t%s\t%s\n' %(row['id'], 0, row['keyword'],re.sub(r'\n|\r|\r\n',' ',row['text'])))
+"""
+tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
+
+#
+def keyword_location_ratio(typ='keyword', label=1):
+    feats=tweet[typ].dropna().unique()
+    ratios=[[],[]]
+    for f in feats:
+        x=tweet[tweet[typ]==f].target.value_counts()
+        for label in x.index:
+            ratios[label].append(x[label] / sum(x))
+
+    plt.hist(ratios[label], label=['%d' %label])
+    plt.legend()
+    plt.title('tweets having %s w/ label=%d' %(typ, label))
+    plt.show()
 
 # Histogram
 def label_count():
@@ -88,7 +101,10 @@ def num_engdigit():
     plt.show()
 
 if __name__ == '__main__':
+    keyword_location_ratio('location', 0)
+    '''
     label_count()
     num_characters()
     num_stopwords(k=10)
     num_engdigit()
+    '''
