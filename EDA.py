@@ -21,7 +21,8 @@ test=pd.read_csv('./data/test.csv')
 """
 output=open('./data/train.tsv','w',encoding='utf-8')
 for i, row in tweet.iterrows():
-    output.write('%d\t%d\t%s\t%s\n' %(row['id'], 0, row['keyword'],re.sub(r'\n|\r|\r\n',' ',row['text'])))
+    k=row['keyword'] if type(row['keyword'])!=float else ''
+    output.write('%d\t%s\t%s\t%s\n' %(row['id'], row['target'], k, re.sub(r'\n|\r|\r\n',' ',row['text'])))
 """
 tokenizer = BertTokenizer.from_pretrained(BERT_MODEL, do_lower_case=True)
 

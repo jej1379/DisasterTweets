@@ -1,5 +1,6 @@
 import requests
-from lxml.html import fromstring
+#from lxml.html import fromstring
+import bs4
 import re
 
 class InputFeatures(object):
@@ -30,35 +31,33 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
             tokens_b.pop()
 
 def find_urls(text):
-    regex = r"(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:'\".,<>?«»“”‘’]))"
-    urls = re.findall(regex, text)
-    try:
-        url=urls[0][0]
-        if url is not None: return url
-        else: return ''
-    except: return ''
+    url_finder = re.compile(r'https?://\S+|www\.\S+')
+    urls = url_finder.findall(text)
+    if len(urls)==0: return ''
+    else: return urls
 
 def get_title_from_url(url):
-    try:
-        r=requests.get(url, allow_redirects=True, timeout=1)
-        if r.status_code == 200:
-            title = fromstring(r.content).findtext('.//title')
-            if title is not None: return title
-            else: return ''
-        else: return ''
+    try: r=requests.get(url, allow_redirects=True, timeout=1)
     except: return ''
+    if r.status_code == 200:
+        title = bs4.BeautifulSoup(r.text, "html5lib").title
+        if title is not None:
+            return re.sub('<[/]*title[^>]*>', '', str(title))
+        else: return ''
+    else: return ''
 
 def convert_example_to_feature(example_row, typ='train'):
     # return example_row
     example, label_map, max_seq_length, tokenizer, output_mode = example_row
-    url = find_urls(example.text_a)
-    if url != '':
-        title = get_title_from_url(url)
-        text = example.text_a.replace(url, title)
-    else:
-        text = example.text_a.replace(url, '')
-
-    tokens_a=[tok for tok in tokenizer.tokenize(re.sub('\s+#',' ',text.strip()))]
+    urls = find_urls(example.text_a)
+    if type(urls) == list:
+        for url in urls:
+            title = get_title_from_url(url)
+            try:text = example.text_a.replace(url, title)
+            except: print(url)
+    else: text = example.text_a
+    # remove hashtag symbol(#,@)
+    tokens_a=[tok for tok in tokenizer.tokenize(re.sub(r'(^|\s)#[a-zA-Z0-9]+|(^|\s)@[a-zA-Z0-9]+',' ',text.strip()))]
     # Account for [CLS] and [SEP] with "- 2"
     if len(tokens_a) > max_seq_length - 2: tokens_a = tokens_a[:(max_seq_length - 2)]
 
